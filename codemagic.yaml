@@ -1,0 +1,121 @@
+workflows:
+  feature-branch-workflow:
+    name: Feature Branch CI/CD
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: 'feature/*'
+          include: true
+        - pattern: 'feature/**'
+          include: true
+      cancel_previous_builds: true
+    
+    environment:
+      groups:
+        - firebase_credentials
+        - ios_credentials
+      vars:
+        PACKAGE_NAME: "com.example.cicdexample"
+        FLUTTER_VERSION: "3.9.0"
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    
+    scripts:
+      - name: Get Flutter packages
+        script: |
+          flutter pub get
+      
+      - name: Run tests
+        script: |
+          flutter test
+      
+      - name: Increment build number
+        script: |
+          # Leer el build number actual del pubspec.yaml
+          CURRENT_BUILD=$(grep 'version:' pubspec.yaml | awk '{print $2}' | cut -d'+' -f2)
+          NEW_BUILD=$((CURRENT_BUILD + 1))
+          VERSION_NAME=$(grep 'version:' pubspec.yaml | awk '{print $2}' | cut -d'+' -f1)
+          
+          # Actualizar el pubspec.yaml con el nuevo build number
+          sed -i.bak "s/version: .*/version: $VERSION_NAME+$NEW_BUILD/" pubspec.yaml
+          
+          echo "Build number incrementado: $CURRENT_BUILD -> $NEW_BUILD"
+          echo "NEW_BUILD_NUMBER=$NEW_BUILD" >> $CM_ENV
+      
+      - name: Build Android APK
+        script: |
+          flutter build apk --release --build-number=$NEW_BUILD_NUMBER
+      
+      - name: Build Android App Bundle
+        script: |
+          flutter build appbundle --release --build-number=$NEW_BUILD_NUMBER
+      
+      - name: Build iOS IPA
+        script: |
+          flutter build ipa --release --build-number=$NEW_BUILD_NUMBER \
+            --export-options-plist=$HOME/export_options.plist
+      
+      - name: Create GitHub Pull Request
+        script: |
+          # Instalar GitHub CLI si no está disponible
+          if ! command -v gh &> /dev/null; then
+            brew install gh
+          fi
+          
+          # Autenticar con el token
+          echo $GITHUB_TOKEN | gh auth login --with-token
+          
+          # Obtener información de la rama
+          BRANCH_NAME=${CM_BRANCH}
+          BASE_BRANCH="develop"
+          FEATURE_NAME=${BRANCH_NAME#feature/}
+          
+          # Crear el PR si no existe
+          gh pr create \
+            --repo $CM_REPO_SLUG \
+            --base $BASE_BRANCH \
+            --head $BRANCH_NAME \
+            --title "QA Review: $FEATURE_NAME" \
+            --body "🚀 **Build automático generado por Codemagic**
+          
+          **Rama:** \`$BRANCH_NAME\`
+          **Build Number:** $NEW_BUILD_NUMBER
+          **Plataformas:** Android + iOS
+          
+          Las aplicaciones están disponibles en Firebase App Distribution para testing de QA.
+          
+          ---
+          _Este PR fue creado automáticamente por el workflow de CI/CD_" \
+            || echo "El PR ya existe o no se pudo crear"
+    
+    artifacts:
+      - build/**/outputs/**/*.apk
+      - build/**/outputs/**/*.aab
+      - build/ios/ipa/*.ipa
+      - flutter_drive.log
+    
+    publishing:
+      firebase:
+        firebase_service_account: $FIREBASE_SERVICE_ACCOUNT
+        android:
+          app_id: $FIREBASE_APP_ID_ANDROID
+          groups:
+            - qa-testers
+          artifact_type: apk
+        ios:
+          app_id: $FIREBASE_APP_ID_IOS
+          groups:
+            - qa-testers
+      
+      email:
+        recipients:
+          - qa-team@company.com
+        notify:
+          success: true
+          failure: true
+
