@@ -15,13 +15,13 @@ workflows:
     environment:
       groups:
         - firebase_credentials
-        - ios_credentials
+        # - ios_credentials  # Comentado temporalmente - solo probando Android
       vars:
         PACKAGE_NAME: "com.example.cicdexample"
         FLUTTER_VERSION: "3.9.0"
       flutter: stable
-      xcode: latest
-      cocoapods: default
+      # xcode: latest  # Comentado temporalmente - solo probando Android
+      # cocoapods: default  # Comentado temporalmente - solo probando Android
     
     scripts:
       - name: Get Flutter packages
@@ -53,9 +53,10 @@ workflows:
         script: |
           flutter build appbundle --release --build-number=$NEW_BUILD_NUMBER
       
-      - name: Build iOS IPA
-        script: |
-          flutter build ipa --release --build-number=$NEW_BUILD_NUMBER
+      # Comentado temporalmente - solo probando Android
+      # - name: Build iOS IPA
+      #   script: |
+      #     flutter build ipa --release --build-number=$NEW_BUILD_NUMBER
       
       - name: Create GitHub Pull Request
         script: |
@@ -82,9 +83,9 @@ workflows:
           
           **Rama:** \`$BRANCH_NAME\`
           **Build Number:** $NEW_BUILD_NUMBER
-          **Plataformas:** Android + iOS
+          **Plataformas:** Android
           
-          Las aplicaciones están disponibles en Firebase App Distribution para testing de QA.
+          La aplicación está disponible en Firebase App Distribution para testing de QA.
           
           ---
           _Este PR fue creado automáticamente por el workflow de CI/CD_" \
@@ -93,7 +94,7 @@ workflows:
     artifacts:
       - build/**/outputs/**/*.apk
       - build/**/outputs/**/*.aab
-      - build/ios/ipa/*.ipa
+      # - build/ios/ipa/*.ipa  # Comentado temporalmente - solo probando Android
       - flutter_drive.log
     
     publishing:
@@ -104,14 +105,15 @@ workflows:
           groups:
             - qa-testers
           artifact_type: apk
-        ios:
-          app_id: $FIREBASE_APP_ID_IOS
-          groups:
-            - qa-testers
+        # Comentado temporalmente - solo probando Android
+        # ios:
+        #   app_id: $FIREBASE_APP_ID_IOS
+        #   groups:
+        #     - qa-testers
       
       email:
         recipients:
-          - qa-team@company.com
+          - horacioduca23@gmail.com
         notify:
           success: true
           failure: true
