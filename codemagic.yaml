@@ -15,6 +15,7 @@ workflows:
     environment:
       groups:
         - firebase_credentials
+        - github_credentials
         # - ios_credentials  # Comentado temporalmente - solo probando Android
       vars:
         PACKAGE_NAME: "com.example.cicdexample"
@@ -91,36 +92,51 @@ workflows:
       
       - name: Create GitHub Pull Request
         script: |
+          # Verificar que GITHUB_TOKEN está configurado
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "⚠️  GITHUB_TOKEN no está configurado, saltando creación de PR"
+            exit 0
+          fi
+          
           # Instalar GitHub CLI si no está disponible
           if ! command -v gh &> /dev/null; then
             brew install gh
           fi
           
-          # Autenticar con el token
-          echo $GITHUB_TOKEN | gh auth login --with-token
+          # Configurar GitHub CLI para usar el token directamente (sin autenticación interactiva)
+          # GitHub CLI reconoce automáticamente GH_TOKEN sin necesidad de gh auth login
+          export GH_TOKEN="$GITHUB_TOKEN"
           
           # Obtener información de la rama
           BRANCH_NAME=${CM_BRANCH}
           BASE_BRANCH="develop"
           FEATURE_NAME=${BRANCH_NAME#feature/}
           
-          # Crear el PR si no existe
-          gh pr create \
-            --repo $CM_REPO_SLUG \
-            --base $BASE_BRANCH \
-            --head $BRANCH_NAME \
-            --title "QA Review: $FEATURE_NAME" \
-            --body "🚀 **Build automático generado por Codemagic**
+          # Verificar si el PR ya existe
+          EXISTING_PR=$(gh pr list --repo $CM_REPO_SLUG --head $BRANCH_NAME --base $BASE_BRANCH --json number --jq '.[0].number' 2>/dev/null || echo "")
           
-          **Rama:** \`$BRANCH_NAME\`
-          **Build Number:** $NEW_BUILD_NUMBER
-          **Plataformas:** Android
-          
-          La aplicación está disponible en Firebase App Distribution para testing de QA.
-          
-          ---
-          _Este PR fue creado automáticamente por el workflow de CI/CD_" \
-            || echo "El PR ya existe o no se pudo crear"
+          if [ -n "$EXISTING_PR" ]; then
+            echo "✅ PR #$EXISTING_PR ya existe para esta rama"
+          else
+            # Crear el PR
+            gh pr create \
+              --repo $CM_REPO_SLUG \
+              --base $BASE_BRANCH \
+              --head $BRANCH_NAME \
+              --title "QA Review: $FEATURE_NAME" \
+              --body "🚀 **Build automático generado por Codemagic**
+            
+            **Rama:** \`$BRANCH_NAME\`
+            **Build Number:** $NEW_BUILD_NUMBER
+            **Plataformas:** Android
+            
+            La aplicación está disponible en Firebase App Distribution para testing de QA.
+            
+            ---
+            _Este PR fue creado automáticamente por el workflow de CI/CD_" \
+              && echo "✅ PR creado exitosamente" \
+              || echo "⚠️  No se pudo crear el PR (puede que ya exista o haya un error)"
+          fi
     
     artifacts:
       - build/**/outputs/**/*.apk
