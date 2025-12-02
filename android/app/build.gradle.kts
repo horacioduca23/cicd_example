@@ -32,6 +32,15 @@ android {
         versionName = flutter.versionName
     }
 
+    // Solución para ambigüedad de variantes de firebase_app_distribution_android
+    flavorDimensions += "default"
+    productFlavors {
+        create("production") {
+            dimension = "default"
+            isDefault = true
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.
