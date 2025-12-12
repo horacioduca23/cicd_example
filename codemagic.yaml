@@ -16,13 +16,13 @@ workflows:
       groups:
         - firebase_credentials
         - github_credentials
-        # - ios_credentials  # Comentado temporalmente - solo probando Android
+        - ios_credentials
       vars:
         PACKAGE_NAME: "com.example.cicdexample"
         FLUTTER_VERSION: "3.9.0"
       flutter: stable
-      # xcode: latest  # Comentado temporalmente - solo probando Android
-      # cocoapods: default  # Comentado temporalmente - solo probando Android
+      xcode: latest
+      cocoapods: default
     
     scripts:
       - name: Setup Firebase configuration files
@@ -55,6 +55,15 @@ workflows:
           echo "📁 Verificando archivos creados:"
           ls -la android/app/google-services.json
           ls -la android/app/src/production/release/google-services.json 2>/dev/null || echo "⚠️  No se pudo verificar todas las ubicaciones"
+          
+          # Crear GoogleService-Info.plist (iOS) desde variable de entorno
+          if [ -n "$GOOGLE_SERVICE_INFO_PLIST" ]; then
+            mkdir -p ios/Runner
+            echo "$GOOGLE_SERVICE_INFO_PLIST" > ios/Runner/GoogleService-Info.plist
+            echo "✅ GoogleService-Info.plist creado desde variable de entorno"
+          else
+            echo "⚠️  GOOGLE_SERVICE_INFO_PLIST no está configurado (iOS fallará si intentas compilar IPA)"
+          fi
       
       - name: Get Flutter packages
         script: |
@@ -80,15 +89,56 @@ workflows:
       - name: Build Android APK
         script: |
           flutter build apk --release --build-number=$NEW_BUILD_NUMBER
+          
+          # Renombrar APKs para identificarlos mejor
+          cd build/app/outputs/flutter-apk
+          
+          # Renombrar APK universal si existe
+          if [ -f "app-release.apk" ]; then
+            mv app-release.apk "app-release-universal.apk"
+            echo "✅ APK universal renombrado: app-release-universal.apk"
+          fi
+          
+          # Renombrar APKs por arquitectura si existen
+          for apk in app-*-release.apk; do
+            if [ -f "$apk" ]; then
+              ARCH=$(echo "$apk" | sed 's/app-\(.*\)-release\.apk/\1/')
+              mv "$apk" "app-release-${ARCH}.apk"
+              echo "✅ APK renombrado: app-release-${ARCH}.apk"
+            fi
+          done
+          
+          cd ../../..
       
       - name: Build Android App Bundle
         script: |
           flutter build appbundle --release --build-number=$NEW_BUILD_NUMBER
       
-      # Comentado temporalmente - solo probando Android
-      # - name: Build iOS IPA
-      #   script: |
-      #     flutter build ipa --release --build-number=$NEW_BUILD_NUMBER
+      - name: Prepare iOS code signing
+        script: |
+          # Inicializar keychain y aplicar provisioning profiles si las herramientas existen (Codemagic)
+          if command -v keychain >/dev/null 2>&1; then
+            keychain initialize
+          else
+            echo "ℹ️  'keychain' tool no disponible (saltando)"
+          fi
+          
+          if command -v xcode-project >/dev/null 2>&1; then
+            xcode-project use-profiles
+          else
+            echo "ℹ️  'xcode-project' tool no disponible (saltando)"
+          fi
+      
+      - name: Build iOS IPA
+        script: |
+          if [ -z "$GOOGLE_SERVICE_INFO_PLIST" ]; then
+            echo "❌ Falta GOOGLE_SERVICE_INFO_PLIST (necesario para iOS)"
+            exit 1
+          fi
+          
+          # Preferimos Ad Hoc (para Firebase App Distribution). Si el flag no existe en tu Flutter, hace fallback.
+          flutter build ipa --release --build-number=$NEW_BUILD_NUMBER --export-method ad-hoc \
+            || flutter build ipa --release --build-number=$NEW_BUILD_NUMBER
       
       - name: Create GitHub Pull Request
         script: |
@@ -141,7 +191,7 @@ workflows:
     artifacts:
       - build/**/outputs/**/*.apk
       - build/**/outputs/**/*.aab
-      # - build/ios/ipa/*.ipa  # Comentado temporalmente - solo probando Android
+      - build/ios/ipa/*.ipa
       - flutter_drive.log
     
     publishing:
@@ -152,11 +202,10 @@ workflows:
           groups:
             - qa-testers
           artifact_type: apk
-        # Comentado temporalmente - solo probando Android
-        # ios:
-        #   app_id: $FIREBASE_APP_ID_IOS
-        #   groups:
-        #     - qa-testers
+        ios:
+          app_id: $FIREBASE_APP_ID_IOS
+          groups:
+            - qa-testers
       
       email:
         recipients:
