@@ -16,7 +16,10 @@ workflows:
       groups:
         - firebase_credentials
         - github_credentials
-        - ios_credentials
+        # iOS signing se gestiona desde "iOS code signing" en Codemagic (Team settings),
+        # no desde un grupo de variables. Dejar esto comentado evita el error:
+        # "references to unknown variable group(s): ios_credentials"
+        # - ios_credentials
       vars:
         PACKAGE_NAME: "com.example.cicdexample"
         FLUTTER_VERSION: "3.9.0"
