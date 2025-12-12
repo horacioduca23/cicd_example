@@ -119,18 +119,17 @@ workflows:
       
       - name: Prepare iOS code signing
         script: |
-          # Inicializar keychain y aplicar provisioning profiles si las herramientas existen (Codemagic)
-          if command -v keychain >/dev/null 2>&1; then
-            keychain initialize
-          else
-            echo "ℹ️  'keychain' tool no disponible (saltando)"
+          # Asegurar que estén disponibles las herramientas de Codemagic para code signing
+          if ! command -v keychain >/dev/null 2>&1 || ! command -v xcode-project >/dev/null 2>&1; then
+            echo "ℹ️  Instalando codemagic-cli-tools..."
+            brew update
+            brew install codemagic-cli-tools
           fi
           
-          if command -v xcode-project >/dev/null 2>&1; then
-            xcode-project use-profiles
-          else
-            echo "ℹ️  'xcode-project' tool no disponible (saltando)"
-          fi
+          # Importar certificados/profiles que cargaste en Codemagic Team settings
+          keychain initialize
+          keychain add-certificates
+          xcode-project use-profiles
       
       - name: Build iOS IPA
         script: |
