@@ -16,10 +16,6 @@ workflows:
       groups:
         - firebase_credentials
         - github_credentials
-        # iOS signing se gestiona desde "iOS code signing" en Codemagic (Team settings),
-        # no desde un grupo de variables. Dejar esto comentado evita el error:
-        # "references to unknown variable group(s): ios_credentials"
-        # - ios_credentials
       vars:
         PACKAGE_NAME: "com.example.cicdexample"
         FLUTTER_VERSION: "3.9.0"
@@ -117,44 +113,6 @@ workflows:
         script: |
           flutter build appbundle --release --build-number=$NEW_BUILD_NUMBER
 
-      - name: Setup iOS signing files (from env vars)
-        script: |
-          # Si subiste el .p12/.mobileprovision en la UI pero Codemagic no los copia a las rutas estándar,
-          # este paso los crea desde variables (base64) en las ubicaciones que usan codemagic-cli-tools.
-          CERT_DIR="$HOME/Library/MobileDevice/Certificates"
-          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
-          mkdir -p "$CERT_DIR" "$PROFILE_DIR"
-          
-          # Certificate (.p12)
-          if ls "$CERT_DIR"/*.p12 >/dev/null 2>&1; then
-            echo "✅ Ya existe un .p12 en $CERT_DIR"
-            ls -lh "$CERT_DIR"/*.p12
-          elif [ -n "$IOS_DISTRIBUTION_P12_BASE64" ]; then
-            echo "ℹ️  Creando .p12 desde IOS_DISTRIBUTION_P12_BASE64"
-            python3 -c "import os, base64, pathlib; data = os.environ.get('IOS_DISTRIBUTION_P12_BASE64','').encode('utf-8'); out = pathlib.Path(os.environ['HOME']) / 'Library/MobileDevice/Certificates/ios_distribution.p12'; out.write_bytes(base64.b64decode(data)); print(f'✅ Escrito: {out}')"
-            # Verificar que el archivo se creó correctamente
-            if [ -f "$CERT_DIR/ios_distribution.p12" ]; then
-              echo "✅ Archivo .p12 creado correctamente"
-              ls -lh "$CERT_DIR/ios_distribution.p12"
-            else
-              echo "❌ Error: No se pudo crear el archivo .p12"
-              exit 1
-            fi
-          else
-            echo "⚠️  No hay .p12 en $CERT_DIR y falta IOS_DISTRIBUTION_P12_BASE64"
-          fi
-          
-          # Provisioning profile (.mobileprovision)
-          if ls "$PROFILE_DIR"/*.mobileprovision >/dev/null 2>&1; then
-            echo "✅ Ya existe un .mobileprovision en $PROFILE_DIR"
-            ls -lh "$PROFILE_DIR"/*.mobileprovision
-          elif [ -n "$IOS_PROVISIONING_PROFILE_BASE64" ]; then
-            echo "ℹ️  Creando .mobileprovision desde IOS_PROVISIONING_PROFILE_BASE64"
-            python3 -c "import os, base64, pathlib, uuid; data = os.environ.get('IOS_PROVISIONING_PROFILE_BASE64','').encode('utf-8'); name = f'{uuid.uuid4()}.mobileprovision'; out = pathlib.Path(os.environ['HOME']) / 'Library/MobileDevice/Provisioning Profiles' / name; out.write_bytes(base64.b64decode(data)); print(f'✅ Escrito: {out}')"
-          else
-            echo "⚠️  No hay .mobileprovision en $PROFILE_DIR y falta IOS_PROVISIONING_PROFILE_BASE64"
-          fi
-      
       - name: Prepare iOS code signing
         script: |
           # Asegurar que estén disponibles las herramientas de Codemagic para code signing
@@ -165,58 +123,8 @@ workflows:
           
           # Importar certificados/profiles que cargaste en Codemagic Team settings
           keychain initialize
-          
-          # Verificar certificados disponibles antes de importar
-          CERT_DIR="$HOME/Library/MobileDevice/Certificates"
-          echo "📋 Verificando certificados en $CERT_DIR:"
-          ls -lh "$CERT_DIR"/*.p12 2>/dev/null || echo "⚠️  No se encontraron archivos .p12"
-          
-          # Verificar formato de los certificados
-          if ls "$CERT_DIR"/*.p12 >/dev/null 2>&1; then
-            for cert in "$CERT_DIR"/*.p12; do
-              echo "🔍 Verificando formato de: $(basename $cert)"
-              file "$cert" || echo "⚠️  No se pudo verificar el formato"
-              # Verificar que el archivo no esté vacío
-              if [ ! -s "$cert" ]; then
-                echo "❌ ERROR: El certificado $cert está vacío o corrupto"
-                exit 1
-              fi
-            done
-          fi
-          
-          # Intentar importar certificados con manejo de errores
-          if keychain add-certificates 2>&1; then
-            echo "✅ Certificados importados correctamente"
-          else
-            echo "⚠️  Error al importar certificados con keychain add-certificates"
-            echo "ℹ️  Esto puede ser normal si Codemagic ya importó los certificados automáticamente"
-          fi
-          
-          # Verificar que los certificados estén disponibles en el keychain
-          KEYCHAIN_PATH=$(ls "$HOME/Library/codemagic-cli-tools/keychains/"*.keychain-db 2>/dev/null | head -1)
-          if [ -n "$KEYCHAIN_PATH" ]; then
-            echo "📋 Certificados disponibles en el keychain ($KEYCHAIN_PATH):"
-            security find-identity -v -p codesigning "$KEYCHAIN_PATH" 2>&1 || echo "⚠️  No se encontraron certificados en el keychain"
-            
-            # Verificar específicamente el certificado de distribución
-            DIST_CERT=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" 2>/dev/null | grep "Apple Distribution" | head -1)
-            if [ -n "$DIST_CERT" ]; then
-              echo "✅ Certificado 'Apple Distribution' encontrado"
-            else
-              echo "⚠️  No se encontró certificado 'Apple Distribution'"
-              echo "📋 Todos los certificados disponibles:"
-              security find-identity -v "$KEYCHAIN_PATH" 2>&1 || true
-            fi
-          else
-            echo "⚠️  No se encontró el keychain de Codemagic"
-          fi
-          
-          # Configurar provisioning profiles
+          keychain add-certificates
           xcode-project use-profiles
-          
-          # Verificar que el Team ID esté configurado correctamente en el proyecto
-          echo "📋 Verificando configuración del proyecto:"
-          grep -r "DEVELOPMENT_TEAM" ios/Runner.xcodeproj/project.pbxproj | head -3
       
       - name: Build iOS IPA
         script: |
@@ -225,45 +133,9 @@ workflows:
             exit 1
           fi
           
-          # Verificar que el certificado esté disponible antes de construir
-          KEYCHAIN_PATH=$(ls "$HOME/Library/codemagic-cli-tools/keychains/"*.keychain-db 2>/dev/null | head -1)
-          if [ -z "$KEYCHAIN_PATH" ]; then
-            echo "❌ No se encontró el keychain de Codemagic"
-            exit 1
-          fi
-          
-          echo "🔐 Verificando certificados disponibles:"
-          security find-identity -v -p codesigning "$KEYCHAIN_PATH" || echo "⚠️  No se encontraron certificados"
-          
-          # Crear export_options.plist explícitamente con la información del Team
-          # Flutter busca este archivo en ios/export_options.plist o en la ubicación estándar
-          EXPORT_OPTIONS_PATH="ios/export_options.plist"
-          mkdir -p ios
-          printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>method</key>\n  <string>ad-hoc</string>\n  <key>teamID</key>\n  <string>A48SV9CUCG</string>\n  <key>signingStyle</key>\n  <string>manual</string>\n  <key>signingCertificate</key>\n  <string>Apple Distribution</string>\n</dict>\n</plist>\n' > "$EXPORT_OPTIONS_PATH"
-          echo "✅ export_options.plist creado en $EXPORT_OPTIONS_PATH"
-          cat "$EXPORT_OPTIONS_PATH"
-          
-          # Construir el IPA
-          # Flutter build ipa hace el archive y la exportación en un solo paso
-          echo "📦 Construyendo IPA..."
-          flutter build ipa \
-            --release \
-            --build-number=$NEW_BUILD_NUMBER \
-            --export-method ad-hoc \
-            || (echo "⚠️  Primer intento falló, intentando sin export-method..." && \
-                flutter build ipa --release --build-number=$NEW_BUILD_NUMBER)
-          
-          # Verificar que el IPA se creó correctamente
-          IPA_PATH="build/ios/ipa/*.ipa"
-          if ls $IPA_PATH >/dev/null 2>&1; then
-            echo "✅ IPA creado exitosamente:"
-            ls -lh $IPA_PATH
-          else
-            echo "❌ No se encontró el IPA en build/ios/ipa/"
-            echo "📋 Verificando archivos generados:"
-            find build/ios -name "*.ipa" -o -name "*.xcarchive" 2>/dev/null || echo "No se encontraron archivos"
-            exit 1
-          fi
+          # Preferimos Ad Hoc (para Firebase App Distribution). Si el flag no existe en tu Flutter, hace fallback.
+          flutter build ipa --release --build-number=$NEW_BUILD_NUMBER --export-method ad-hoc \
+            || flutter build ipa --release --build-number=$NEW_BUILD_NUMBER
       
       - name: Create GitHub Pull Request
         script: |
@@ -294,29 +166,21 @@ workflows:
             echo "✅ PR #$EXISTING_PR ya existe para esta rama"
           else
             # Crear el PR
-            PR_BODY=$(cat <<'PR_BODY_EOF'
-🚀 **Build automático generado por Codemagic**
-
-**Rama:** `$BRANCH_NAME`
-**Build Number:** $NEW_BUILD_NUMBER
-**Plataformas:** Android, iOS
-
-La aplicación está disponible en Firebase App Distribution para testing de QA.
-
----
-_Este PR fue creado automáticamente por el workflow de CI/CD_
-PR_BODY_EOF
-            )
-            
-            # Expandir variables en el cuerpo del PR
-            PR_BODY=$(echo "$PR_BODY" | sed "s|\$BRANCH_NAME|$BRANCH_NAME|g" | sed "s|\$NEW_BUILD_NUMBER|$NEW_BUILD_NUMBER|g")
-            
             gh pr create \
               --repo $CM_REPO_SLUG \
               --base $BASE_BRANCH \
               --head $BRANCH_NAME \
               --title "QA Review: $FEATURE_NAME" \
-              --body "$PR_BODY" \
+              --body "🚀 **Build automático generado por Codemagic**
+
+**Rama:** \`$BRANCH_NAME\`
+**Build Number:** $NEW_BUILD_NUMBER
+**Plataformas:** Android
+
+La aplicación está disponible en Firebase App Distribution para testing de QA.
+
+---
+_Este PR fue creado automáticamente por el workflow de CI/CD_" \
               && echo "✅ PR creado exitosamente" \
               || echo "⚠️  No se pudo crear el PR (puede que ya exista o haya un error)"
           fi
@@ -326,7 +190,7 @@ PR_BODY_EOF
       - build/**/outputs/**/*.aab
       - build/ios/ipa/*.ipa
       - flutter_drive.log
-
+    
     publishing:
       firebase:
         firebase_service_account: $FIREBASE_SERVICE_ACCOUNT
@@ -339,10 +203,10 @@ PR_BODY_EOF
           app_id: $FIREBASE_APP_ID_IOS
           groups:
             - qa-testers
-
+      
       email:
         recipients:
-          - "horacioduca23@gmail.com"
+          - horacioduca23@gmail.com
         notify:
           success: true
           failure: true
