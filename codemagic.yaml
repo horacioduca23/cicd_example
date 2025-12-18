@@ -3,7 +3,7 @@ workflows:
     name: Feature Branch CI/CD
     instance_type: mac_mini_m2
     max_build_duration: 60
-    
+
     triggering:
       events:
         - push
@@ -11,19 +11,63 @@ workflows:
         - pattern: 'feature/*'
           include: true
       cancel_previous_builds: true
-    
+
     environment:
       groups:
         - firebase_credentials
-        # - ios_credentials  # Comentado temporalmente - solo probando Android
+        - github_credentials
+        # iOS signing se gestiona desde "iOS code signing" en Codemagic (Team settings),
+        # no desde un grupo de variables. Dejar esto comentado evita el error:
+        # "references to unknown variable group(s): ios_credentials"
+        # - ios_credentials
       vars:
         PACKAGE_NAME: "com.example.cicdexample"
         FLUTTER_VERSION: "3.9.0"
       flutter: stable
-      # xcode: latest  # Comentado temporalmente - solo probando Android
-      # cocoapods: default  # Comentado temporalmente - solo probando Android
-    
+      xcode: latest
+      cocoapods: default
+
     scripts:
+      - name: Setup Firebase configuration files
+        script: |
+          # Crear el archivo google-services.json desde variable de entorno
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            echo "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
+            echo "✅ google-services.json creado desde variable de entorno"
+          elif [ -n "$GOOGLE_SERVICE_JSON" ]; then
+            echo "$GOOGLE_SERVICE_JSON" > android/app/google-services.json
+            echo "✅ google-services.json creado desde variable de entorno (fallback)"
+          else
+            echo "❌ ERROR: Variables GOOGLE_SERVICES_JSON o GOOGLE_SERVICE_JSON no están configuradas"
+            exit 1
+          fi
+          
+          # Crear directorios para productFlavors si no existen
+          mkdir -p android/app/src/production/release
+          mkdir -p android/app/src/release
+          mkdir -p android/app/src/production
+          mkdir -p android/app/src/productionRelease
+          
+          # Copiar el archivo a todas las ubicaciones que Gradle busca
+          cp android/app/google-services.json android/app/src/production/release/google-services.json
+          cp android/app/google-services.json android/app/src/release/google-services.json
+          cp android/app/google-services.json android/app/src/production/google-services.json
+          cp android/app/google-services.json android/app/src/productionRelease/google-services.json
+          
+          echo "✅ Archivos google-services.json copiados a todas las ubicaciones necesarias"
+          echo "📁 Verificando archivos creados:"
+          ls -la android/app/google-services.json
+          ls -la android/app/src/production/release/google-services.json 2>/dev/null || echo "⚠️  No se pudo verificar todas las ubicaciones"
+          
+          # Crear GoogleService-Info.plist (iOS) desde variable de entorno
+          if [ -n "$GOOGLE_SERVICE_INFO_PLIST" ]; then
+            mkdir -p ios/Runner
+            echo "$GOOGLE_SERVICE_INFO_PLIST" > ios/Runner/GoogleService-Info.plist
+            echo "✅ GoogleService-Info.plist creado desde variable de entorno"
+          else
+            echo "⚠️  GOOGLE_SERVICE_INFO_PLIST no está configurado (iOS fallará si intentas compilar IPA)"
+          fi
+      
       - name: Get Flutter packages
         script: |
           flutter pub get
@@ -48,55 +92,137 @@ workflows:
       - name: Build Android APK
         script: |
           flutter build apk --release --build-number=$NEW_BUILD_NUMBER
+          
+          # Renombrar APKs para identificarlos mejor
+          cd build/app/outputs/flutter-apk
+          
+          # Renombrar APK universal si existe
+          if [ -f "app-release.apk" ]; then
+            mv app-release.apk "app-release-universal.apk"
+            echo "✅ APK universal renombrado: app-release-universal.apk"
+          fi
+          
+          # Renombrar APKs por arquitectura si existen
+          for apk in app-*-release.apk; do
+            if [ -f "$apk" ]; then
+              ARCH=$(echo "$apk" | sed 's/app-\(.*\)-release\.apk/\1/')
+              mv "$apk" "app-release-${ARCH}.apk"
+              echo "✅ APK renombrado: app-release-${ARCH}.apk"
+            fi
+          done
+          
+          cd ../../..
       
       - name: Build Android App Bundle
         script: |
           flutter build appbundle --release --build-number=$NEW_BUILD_NUMBER
+
+      - name: Setup iOS signing files (from env vars)
+        script: |
+          # Si subiste el .p12/.mobileprovision en la UI pero Codemagic no los copia a las rutas estándar,
+          # este paso los crea desde variables (base64) en las ubicaciones que usan codemagic-cli-tools.
+          CERT_DIR="$HOME/Library/MobileDevice/Certificates"
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$CERT_DIR" "$PROFILE_DIR"
+          
+          # Certificate (.p12)
+          if ls "$CERT_DIR"/*.p12 >/dev/null 2>&1; then
+            echo "✅ Ya existe un .p12 en $CERT_DIR"
+          elif [ -n "$IOS_DISTRIBUTION_P12_BASE64" ]; then
+            echo "ℹ️  Creando .p12 desde IOS_DISTRIBUTION_P12_BASE64"
+            python3 -c "import os, base64, pathlib; data = os.environ.get('IOS_DISTRIBUTION_P12_BASE64','').encode('utf-8'); out = pathlib.Path(os.environ['HOME']) / 'Library/MobileDevice/Certificates/ios_distribution.p12'; out.write_bytes(base64.b64decode(data)); print(f'✅ Escrito: {out}')"
+          else
+            echo "⚠️  No hay .p12 en $CERT_DIR y falta IOS_DISTRIBUTION_P12_BASE64"
+          fi
+          
+          # Provisioning profile (.mobileprovision)
+          if ls "$PROFILE_DIR"/*.mobileprovision >/dev/null 2>&1; then
+            echo "✅ Ya existe un .mobileprovision en $PROFILE_DIR"
+          elif [ -n "$IOS_PROVISIONING_PROFILE_BASE64" ]; then
+            echo "ℹ️  Creando .mobileprovision desde IOS_PROVISIONING_PROFILE_BASE64"
+            python3 -c "import os, base64, pathlib, uuid; data = os.environ.get('IOS_PROVISIONING_PROFILE_BASE64','').encode('utf-8'); name = f'{uuid.uuid4()}.mobileprovision'; out = pathlib.Path(os.environ['HOME']) / 'Library/MobileDevice/Provisioning Profiles' / name; out.write_bytes(base64.b64decode(data)); print(f'✅ Escrito: {out}')"
+          else
+            echo "⚠️  No hay .mobileprovision en $PROFILE_DIR y falta IOS_PROVISIONING_PROFILE_BASE64"
+          fi
       
-      # Comentado temporalmente - solo probando Android
-      # - name: Build iOS IPA
-      #   script: |
-      #     flutter build ipa --release --build-number=$NEW_BUILD_NUMBER
+      - name: Prepare iOS code signing
+        script: |
+          # Asegurar que estén disponibles las herramientas de Codemagic para code signing
+          if ! command -v keychain >/dev/null 2>&1 || ! command -v xcode-project >/dev/null 2>&1; then
+            echo "ℹ️  Instalando codemagic-cli-tools..."
+            brew install codemagic-cli-tools
+          fi
+          
+          # Importar certificados/profiles que cargaste en Codemagic Team settings
+          keychain initialize
+          keychain add-certificates
+          xcode-project use-profiles
+      
+      - name: Build iOS IPA
+        script: |
+          if [ -z "$GOOGLE_SERVICE_INFO_PLIST" ]; then
+            echo "❌ Falta GOOGLE_SERVICE_INFO_PLIST (necesario para iOS)"
+            exit 1
+          fi
+          
+          # Preferimos Ad Hoc (para Firebase App Distribution). Si el flag no existe en tu Flutter, hace fallback.
+          flutter build ipa --release --build-number=$NEW_BUILD_NUMBER --export-method ad-hoc \
+            || flutter build ipa --release --build-number=$NEW_BUILD_NUMBER
       
       - name: Create GitHub Pull Request
         script: |
+          # Verificar que GITHUB_TOKEN está configurado
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "⚠️  GITHUB_TOKEN no está configurado, saltando creación de PR"
+            exit 0
+          fi
+          
           # Instalar GitHub CLI si no está disponible
           if ! command -v gh &> /dev/null; then
             brew install gh
           fi
           
-          # Autenticar con el token
-          echo $GITHUB_TOKEN | gh auth login --with-token
+          # Configurar GitHub CLI para usar el token directamente (sin autenticación interactiva)
+          # GitHub CLI reconoce automáticamente GH_TOKEN sin necesidad de gh auth login
+          export GH_TOKEN="$GITHUB_TOKEN"
           
           # Obtener información de la rama
           BRANCH_NAME=${CM_BRANCH}
           BASE_BRANCH="develop"
           FEATURE_NAME=${BRANCH_NAME#feature/}
           
-          # Crear el PR si no existe
-          gh pr create \
-            --repo $CM_REPO_SLUG \
-            --base $BASE_BRANCH \
-            --head $BRANCH_NAME \
-            --title "QA Review: $FEATURE_NAME" \
-            --body "🚀 **Build automático generado por Codemagic**
+          # Verificar si el PR ya existe
+          EXISTING_PR=$(gh pr list --repo $CM_REPO_SLUG --head $BRANCH_NAME --base $BASE_BRANCH --json number --jq '.[0].number' 2>/dev/null || echo "")
           
-          **Rama:** \`$BRANCH_NAME\`
-          **Build Number:** $NEW_BUILD_NUMBER
-          **Plataformas:** Android
-          
-          La aplicación está disponible en Firebase App Distribution para testing de QA.
-          
-          ---
-          _Este PR fue creado automáticamente por el workflow de CI/CD_" \
-            || echo "El PR ya existe o no se pudo crear"
+          if [ -n "$EXISTING_PR" ]; then
+            echo "✅ PR #$EXISTING_PR ya existe para esta rama"
+          else
+            # Crear el PR
+            gh pr create \
+              --repo $CM_REPO_SLUG \
+              --base $BASE_BRANCH \
+              --head $BRANCH_NAME \
+              --title "QA Review: $FEATURE_NAME" \
+              --body "🚀 **Build automático generado por Codemagic**
+            
+            **Rama:** \`$BRANCH_NAME\`
+            **Build Number:** $NEW_BUILD_NUMBER
+            **Plataformas:** Android
+            
+            La aplicación está disponible en Firebase App Distribution para testing de QA.
+            
+            ---
+            _Este PR fue creado automáticamente por el workflow de CI/CD_" \
+              && echo "✅ PR creado exitosamente" \
+              || echo "⚠️  No se pudo crear el PR (puede que ya exista o haya un error)"
+          fi
     
     artifacts:
       - build/**/outputs/**/*.apk
       - build/**/outputs/**/*.aab
-      # - build/ios/ipa/*.ipa  # Comentado temporalmente - solo probando Android
+      - build/ios/ipa/*.ipa
       - flutter_drive.log
-    
+
     publishing:
       firebase:
         firebase_service_account: $FIREBASE_SERVICE_ACCOUNT
@@ -105,16 +231,14 @@ workflows:
           groups:
             - qa-testers
           artifact_type: apk
-        # Comentado temporalmente - solo probando Android
-        # ios:
-        #   app_id: $FIREBASE_APP_ID_IOS
-        #   groups:
-        #     - qa-testers
-      
+        ios:
+          app_id: $FIREBASE_APP_ID_IOS
+          groups:
+            - qa-testers
+
       email:
         recipients:
           - horacioduca23@gmail.com
         notify:
           success: true
           failure: true
-
