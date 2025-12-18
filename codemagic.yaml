@@ -3,7 +3,7 @@ workflows:
     name: Feature Branch CI/CD
     instance_type: mac_mini_m2
     max_build_duration: 60
-    
+
     triggering:
       events:
         - push
@@ -11,18 +11,22 @@ workflows:
         - pattern: 'feature/*'
           include: true
       cancel_previous_builds: true
-    
+
     environment:
       groups:
         - firebase_credentials
         - github_credentials
+        # iOS signing se gestiona desde "iOS code signing" en Codemagic (Team settings),
+        # no desde un grupo de variables. Dejar esto comentado evita el error:
+        # "references to unknown variable group(s): ios_credentials"
+        # - ios_credentials
       vars:
         PACKAGE_NAME: "com.example.cicdexample"
         FLUTTER_VERSION: "3.9.0"
       flutter: stable
       xcode: latest
       cocoapods: default
-    
+
     scripts:
       - name: Setup Firebase configuration files
         script: |
@@ -113,6 +117,34 @@ workflows:
         script: |
           flutter build appbundle --release --build-number=$NEW_BUILD_NUMBER
 
+      - name: Setup iOS signing files (from env vars)
+        script: |
+          # Si subiste el .p12/.mobileprovision en la UI pero Codemagic no los copia a las rutas estándar,
+          # este paso los crea desde variables (base64) en las ubicaciones que usan codemagic-cli-tools.
+          CERT_DIR="$HOME/Library/MobileDevice/Certificates"
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$CERT_DIR" "$PROFILE_DIR"
+          
+          # Certificate (.p12)
+          if ls "$CERT_DIR"/*.p12 >/dev/null 2>&1; then
+            echo "✅ Ya existe un .p12 en $CERT_DIR"
+          elif [ -n "$IOS_DISTRIBUTION_P12_BASE64" ]; then
+            echo "ℹ️  Creando .p12 desde IOS_DISTRIBUTION_P12_BASE64"
+            python3 -c "import os, base64, pathlib; data = os.environ.get('IOS_DISTRIBUTION_P12_BASE64','').encode('utf-8'); out = pathlib.Path(os.environ['HOME']) / 'Library/MobileDevice/Certificates/ios_distribution.p12'; out.write_bytes(base64.b64decode(data)); print(f'✅ Escrito: {out}')"
+          else
+            echo "⚠️  No hay .p12 en $CERT_DIR y falta IOS_DISTRIBUTION_P12_BASE64"
+          fi
+          
+          # Provisioning profile (.mobileprovision)
+          if ls "$PROFILE_DIR"/*.mobileprovision >/dev/null 2>&1; then
+            echo "✅ Ya existe un .mobileprovision en $PROFILE_DIR"
+          elif [ -n "$IOS_PROVISIONING_PROFILE_BASE64" ]; then
+            echo "ℹ️  Creando .mobileprovision desde IOS_PROVISIONING_PROFILE_BASE64"
+            python3 -c "import os, base64, pathlib, uuid; data = os.environ.get('IOS_PROVISIONING_PROFILE_BASE64','').encode('utf-8'); name = f'{uuid.uuid4()}.mobileprovision'; out = pathlib.Path(os.environ['HOME']) / 'Library/MobileDevice/Provisioning Profiles' / name; out.write_bytes(base64.b64decode(data)); print(f'✅ Escrito: {out}')"
+          else
+            echo "⚠️  No hay .mobileprovision en $PROFILE_DIR y falta IOS_PROVISIONING_PROFILE_BASE64"
+          fi
+      
       - name: Prepare iOS code signing
         script: |
           # Asegurar que estén disponibles las herramientas de Codemagic para code signing
@@ -172,15 +204,15 @@ workflows:
               --head $BRANCH_NAME \
               --title "QA Review: $FEATURE_NAME" \
               --body "🚀 **Build automático generado por Codemagic**
-
-**Rama:** \`$BRANCH_NAME\`
-**Build Number:** $NEW_BUILD_NUMBER
-**Plataformas:** Android
-
-La aplicación está disponible en Firebase App Distribution para testing de QA.
-
----
-_Este PR fue creado automáticamente por el workflow de CI/CD_" \
+            
+            **Rama:** \`$BRANCH_NAME\`
+            **Build Number:** $NEW_BUILD_NUMBER
+            **Plataformas:** Android
+            
+            La aplicación está disponible en Firebase App Distribution para testing de QA.
+            
+            ---
+            _Este PR fue creado automáticamente por el workflow de CI/CD_" \
               && echo "✅ PR creado exitosamente" \
               || echo "⚠️  No se pudo crear el PR (puede que ya exista o haya un error)"
           fi
@@ -190,7 +222,7 @@ _Este PR fue creado automáticamente por el workflow de CI/CD_" \
       - build/**/outputs/**/*.aab
       - build/ios/ipa/*.ipa
       - flutter_drive.log
-    
+
     publishing:
       firebase:
         firebase_service_account: $FIREBASE_SERVICE_ACCOUNT
@@ -203,7 +235,7 @@ _Este PR fue creado automáticamente por el workflow de CI/CD_" \
           app_id: $FIREBASE_APP_ID_IOS
           groups:
             - qa-testers
-      
+
       email:
         recipients:
           - horacioduca23@gmail.com
