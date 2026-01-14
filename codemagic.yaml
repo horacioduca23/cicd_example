@@ -1,8 +1,11 @@
 workflows:
+  # ============================================
+  # WORKFLOW 1: Feature Branch (Solo Tests + Crear PR)
+  # ============================================
   feature-branch-workflow:
-    name: Feature Branch CI/CD
+    name: Feature Branch CI (Tests Only)
     instance_type: mac_mini_m2
-    max_build_duration: 60
+    max_build_duration: 30
     
     triggering:
       events:
@@ -15,7 +18,7 @@ workflows:
     environment:
       groups:
         - firebase_credentials
-        - ios_credentials
+        - github_credentials
       vars:
         PACKAGE_NAME: "com.example.cicdexample"
         FLUTTER_VERSION: "3.9.0"
@@ -24,6 +27,182 @@ workflows:
       cocoapods: default
     
     scripts:
+      - name: Setup Firebase configuration files (for tests)
+        script: |
+          # Crear google-services.json solo para que los tests pasen
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            echo "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
+          elif [ -n "$GOOGLE_SERVICE_JSON" ]; then
+            echo "$GOOGLE_SERVICE_JSON" > android/app/google-services.json
+          else
+            echo "⚠️  Variables GOOGLE_SERVICES_JSON no configuradas (tests pueden fallar)"
+          fi
+          
+          # Crear GoogleService-Info.plist para iOS tests
+          if [ -n "$GOOGLE_SERVICE_INFO_PLIST" ]; then
+            mkdir -p ios/Runner
+            echo "$GOOGLE_SERVICE_INFO_PLIST" > ios/Runner/GoogleService-Info.plist
+          fi
+      
+      - name: Get Flutter packages
+        script: |
+          flutter pub get
+      
+      - name: Run tests
+        script: |
+          flutter test
+      
+      - name: Create GitHub Pull Request
+        script: |
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "⚠️  GITHUB_TOKEN no configurado, saltando creación de PR"
+            exit 0
+          fi
+          
+          if ! command -v gh &> /dev/null; then
+            brew install gh
+          fi
+          
+          export GH_TOKEN="$GITHUB_TOKEN"
+          BRANCH_NAME=${CM_BRANCH}
+          BASE_BRANCH="develop"
+          FEATURE_NAME=${BRANCH_NAME#feature/}
+          
+          EXISTING_PR=$(gh pr list --repo $CM_REPO_SLUG --head $BRANCH_NAME --base $BASE_BRANCH --json number --jq '.[0].number' 2>/dev/null || echo "")
+          
+          if [ -n "$EXISTING_PR" ]; then
+            echo "✅ PR #$EXISTING_PR ya existe para esta rama"
+          else
+            gh pr create \
+              --repo $CM_REPO_SLUG \
+              --base $BASE_BRANCH \
+              --head $BRANCH_NAME \
+              --title "QA Review: $FEATURE_NAME" \
+              --body "🚀 **PR creado automáticamente por CI/CD**
+            
+            **Rama:** \`$BRANCH_NAME\`
+            **Estado:** Tests pasados ✅
+            
+            Esperando merge a \`develop\` para generar builds y distribución a QA.
+            
+            ---
+            _Este PR fue creado automáticamente por el workflow de CI/CD_" \
+              && echo "✅ PR creado exitosamente" \
+              || echo "⚠️  No se pudo crear el PR"
+          fi
+    
+    artifacts:
+      - flutter_drive.log
+    
+    # ⚠️ NO hay sección "publishing" - no se publica nada aquí
+
+  # ============================================
+  # WORKFLOW 2: Merge a Develop (Builds Completos + Publicación)
+  # ============================================
+  merge-to-develop-workflow:
+    name: Merge to Develop (Build & Distribute)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    
+    triggering:
+      events:
+        - pull_request_closed
+      branch_patterns:
+        - pattern: develop
+          include: true
+          source: false  # Solo PRs hacia develop, no pushes directos
+    
+    environment:
+      groups:
+        - firebase_credentials
+        - github_credentials
+      vars:
+        PACKAGE_NAME: "com.example.cicdexample"
+        FLUTTER_VERSION: "3.9.0"
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    
+    scripts:
+      - name: Verify PR was merged (not just closed)
+        script: |
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "❌ GITHUB_TOKEN no configurado"
+            exit 1
+          fi
+          
+          if ! command -v gh &> /dev/null; then
+            brew install gh
+          fi
+          
+          export GH_TOKEN="$GITHUB_TOKEN"
+          
+          # Obtener información del PR desde las variables de entorno de Codemagic
+          PR_NUMBER=${CM_PULL_REQUEST_NUMBER:-""}
+          
+          if [ -z "$PR_NUMBER" ]; then
+            echo "⚠️  No se pudo obtener el número de PR desde variables de entorno"
+            echo "Intentando obtenerlo desde el commit..."
+            # Intentar obtener el PR desde el commit actual
+            PR_NUMBER=$(gh pr list --repo $CM_REPO_SLUG --state all --base develop --head ${CM_BRANCH} --json number --jq '.[0].number' 2>/dev/null || echo "")
+          fi
+          
+          if [ -z "$PR_NUMBER" ]; then
+            echo "❌ No se pudo determinar el número de PR. Abortando build."
+            exit 1
+          fi
+          
+          echo "🔍 Verificando PR #$PR_NUMBER..."
+          
+          # Verificar que el PR fue mergeado (no solo cerrado)
+          MERGED=$(gh pr view $PR_NUMBER --repo $CM_REPO_SLUG --json merged --jq '.merged' 2>/dev/null || echo "false")
+          
+          if [ "$MERGED" != "true" ]; then
+            echo "⏸️  PR #$PR_NUMBER fue cerrado pero NO mergeado. Saltando build."
+            exit 0  # Exit 0 = éxito pero sin hacer nada
+          fi
+          
+          echo "✅ PR #$PR_NUMBER fue mergeado correctamente. Procediendo con build..."
+          echo "PR_NUMBER=$PR_NUMBER" >> $CM_ENV
+      
+      - name: Setup Firebase configuration files
+        script: |
+          # Crear el archivo google-services.json desde variable de entorno
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            echo "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
+            echo "✅ google-services.json creado desde variable de entorno"
+          elif [ -n "$GOOGLE_SERVICE_JSON" ]; then
+            echo "$GOOGLE_SERVICE_JSON" > android/app/google-services.json
+            echo "✅ google-services.json creado desde variable de entorno (fallback)"
+          else
+            echo "❌ ERROR: Variables GOOGLE_SERVICES_JSON o GOOGLE_SERVICE_JSON no están configuradas"
+            exit 1
+          fi
+          
+          # Crear directorios para productFlavors si no existen
+          mkdir -p android/app/src/production/release
+          mkdir -p android/app/src/release
+          mkdir -p android/app/src/production
+          mkdir -p android/app/src/productionRelease
+          
+          # Copiar el archivo a todas las ubicaciones que Gradle busca
+          cp android/app/google-services.json android/app/src/production/release/google-services.json
+          cp android/app/google-services.json android/app/src/release/google-services.json
+          cp android/app/google-services.json android/app/src/production/google-services.json
+          cp android/app/google-services.json android/app/src/productionRelease/google-services.json
+          
+          echo "✅ Archivos google-services.json copiados a todas las ubicaciones necesarias"
+          
+          # Crear GoogleService-Info.plist (iOS) desde variable de entorno
+          if [ -n "$GOOGLE_SERVICE_INFO_PLIST" ]; then
+            mkdir -p ios/Runner
+            echo "$GOOGLE_SERVICE_INFO_PLIST" > ios/Runner/GoogleService-Info.plist
+            echo "✅ GoogleService-Info.plist creado desde variable de entorno"
+          else
+            echo "❌ ERROR: GOOGLE_SERVICE_INFO_PLIST no está configurado (necesario para iOS)"
+            exit 1
+          fi
+      
       - name: Get Flutter packages
         script: |
           flutter pub get
@@ -47,53 +226,164 @@ workflows:
       
       - name: Build Android APK
         script: |
+          echo "🔨 Iniciando build de Android APK..."
           flutter build apk --release --build-number=$NEW_BUILD_NUMBER
+          
+          # Verificar que el APK se generó correctamente
+          if [ ! -f "build/app/outputs/flutter-apk/app-release.apk" ]; then
+            echo "❌ ERROR: No se pudo generar el APK de Android"
+            exit 1
+          fi
+          
+          echo "✅ APK de Android generado correctamente"
+          
+          # Renombrar APKs para identificarlos mejor
+          cd build/app/outputs/flutter-apk
+          
+          if [ -f "app-release.apk" ]; then
+            mv app-release.apk "app-release-universal.apk"
+            echo "✅ APK universal renombrado: app-release-universal.apk"
+          fi
+          
+          for apk in app-*-release.apk; do
+            if [ -f "$apk" ]; then
+              ARCH=$(echo "$apk" | sed 's/app-\(.*\)-release\.apk/\1/')
+              mv "$apk" "app-release-${ARCH}.apk"
+              echo "✅ APK renombrado: app-release-${ARCH}.apk"
+            fi
+          done
+          
+          cd ../../..
+          
+          # Marcar que Android build fue exitoso
+          echo "ANDROID_BUILD_SUCCESS=true" >> $CM_ENV
       
       - name: Build Android App Bundle
         script: |
+          echo "🔨 Iniciando build de Android App Bundle..."
           flutter build appbundle --release --build-number=$NEW_BUILD_NUMBER
+          
+          # Verificar que el AAB se generó correctamente
+          if [ ! -f "build/app/outputs/bundle/release/app-release.aab" ]; then
+            echo "❌ ERROR: No se pudo generar el AAB de Android"
+            exit 1
+          fi
+          
+          echo "✅ AAB de Android generado correctamente"
+
+      - name: Setup iOS signing files (from env vars)
+        script: |
+          CERT_DIR="$HOME/Library/MobileDevice/Certificates"
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$CERT_DIR" "$PROFILE_DIR"
+          
+          # Certificate (.p12)
+          if ls "$CERT_DIR"/*.p12 >/dev/null 2>&1; then
+            echo "✅ Ya existe un .p12 en $CERT_DIR"
+          elif [ -n "$IOS_DISTRIBUTION_P12_BASE64" ]; then
+            echo "ℹ️  Creando .p12 desde IOS_DISTRIBUTION_P12_BASE64"
+            python3 -c "import os, base64, pathlib; data = os.environ.get('IOS_DISTRIBUTION_P12_BASE64','').encode('utf-8'); out = pathlib.Path(os.environ['HOME']) / 'Library/MobileDevice/Certificates/ios_distribution.p12'; out.write_bytes(base64.b64decode(data)); print(f'✅ Escrito: {out}')"
+          else
+            echo "⚠️  No hay .p12 en $CERT_DIR y falta IOS_DISTRIBUTION_P12_BASE64"
+          fi
+          
+          # Provisioning profile (.mobileprovision)
+          if ls "$PROFILE_DIR"/*.mobileprovision >/dev/null 2>&1; then
+            echo "✅ Ya existe un .mobileprovision en $PROFILE_DIR"
+          elif [ -n "$IOS_PROVISIONING_PROFILE_BASE64" ]; then
+            echo "ℹ️  Creando .mobileprovision desde IOS_PROVISIONING_PROFILE_BASE64"
+            python3 -c "import os, base64, pathlib, uuid; data = os.environ.get('IOS_PROVISIONING_PROFILE_BASE64','').encode('utf-8'); name = f'{uuid.uuid4()}.mobileprovision'; out = pathlib.Path(os.environ['HOME']) / 'Library/MobileDevice/Provisioning Profiles' / name; out.write_bytes(base64.b64decode(data)); print(f'✅ Escrito: {out}')"
+          else
+            echo "⚠️  No hay .mobileprovision en $PROFILE_DIR y falta IOS_PROVISIONING_PROFILE_BASE64"
+          fi
+      
+      - name: Prepare iOS code signing
+        script: |
+          if ! command -v keychain >/dev/null 2>&1 || ! command -v xcode-project >/dev/null 2>&1; then
+            echo "ℹ️  Instalando codemagic-cli-tools..."
+            brew install codemagic-cli-tools
+          fi
+          
+          keychain initialize
+          keychain add-certificates
+          xcode-project use-profiles
       
       - name: Build iOS IPA
         script: |
-          flutter build ipa --release --build-number=$NEW_BUILD_NUMBER
-      
-      - name: Create GitHub Pull Request
-        script: |
-          # Instalar GitHub CLI si no está disponible
-          if ! command -v gh &> /dev/null; then
-            brew install gh
+          echo "🔨 Iniciando build de iOS IPA..."
+          
+          if [ -z "$GOOGLE_SERVICE_INFO_PLIST" ]; then
+            echo "❌ Falta GOOGLE_SERVICE_INFO_PLIST (necesario para iOS)"
+            exit 1
           fi
           
-          # Autenticar con el token
-          echo $GITHUB_TOKEN | gh auth login --with-token
+          # Preferimos Ad Hoc (para Firebase App Distribution)
+          flutter build ipa --release --build-number=$NEW_BUILD_NUMBER --export-method ad-hoc \
+            || flutter build ipa --release --build-number=$NEW_BUILD_NUMBER
           
-          # Obtener información de la rama
-          BRANCH_NAME=${CM_BRANCH}
-          BASE_BRANCH="develop"
-          FEATURE_NAME=${BRANCH_NAME#feature/}
+          # Verificar que el IPA se generó correctamente
+          IPA_PATH=$(find build/ios/ipa -name "*.ipa" -print -quit)
+          if [ -z "$IPA_PATH" ] || [ ! -f "$IPA_PATH" ]; then
+            echo "❌ ERROR: No se pudo generar el IPA de iOS"
+            exit 1
+          fi
           
-          # Crear el PR si no existe
-          gh pr create \
-            --repo $CM_REPO_SLUG \
-            --base $BASE_BRANCH \
-            --head $BRANCH_NAME \
-            --title "QA Review: $FEATURE_NAME" \
-            --body "🚀 **Build automático generado por Codemagic**
+          echo "✅ IPA de iOS generado correctamente: $IPA_PATH"
           
-          **Rama:** \`$BRANCH_NAME\`
-          **Build Number:** $NEW_BUILD_NUMBER
-          **Plataformas:** Android + iOS
+          # Marcar que iOS build fue exitoso
+          echo "IOS_BUILD_SUCCESS=true" >> $CM_ENV
+      
+      - name: Verify both builds exist before publishing
+        script: |
+          echo "🔍 Verificando que ambos builds existen antes de publicar..."
           
-          Las aplicaciones están disponibles en Firebase App Distribution para testing de QA.
+          # Verificar Android APK
+          ANDROID_APK=$(find build/app/outputs/flutter-apk -name "*.apk" -print -quit)
+          if [ -z "$ANDROID_APK" ] || [ ! -f "$ANDROID_APK" ]; then
+            echo "❌ ERROR: No se encontró el APK de Android"
+            exit 1
+          fi
+          echo "✅ Android APK encontrado: $ANDROID_APK"
           
-          ---
-          _Este PR fue creado automáticamente por el workflow de CI/CD_" \
-            || echo "El PR ya existe o no se pudo crear"
+          # Verificar iOS IPA
+          IOS_IPA=$(find build/ios/ipa -name "*.ipa" -print -quit)
+          if [ -z "$IOS_IPA" ] || [ ! -f "$IOS_IPA" ]; then
+            echo "❌ ERROR: No se encontró el IPA de iOS"
+            exit 1
+          fi
+          echo "✅ iOS IPA encontrado: $IOS_IPA"
+          
+          echo "✅ Ambos builds verificados correctamente. Listos para publicar a Firebase."
+      
+      - name: Create release notes
+        script: |
+          PR_NUMBER=${PR_NUMBER:-"N/A"}
+          AUTHOR=$(git log -1 --pretty=%an 2>/dev/null || echo "Unknown")
+          COMMIT_MSG=$(git log -1 --pretty=%B 2>/dev/null || echo "")
+          
+          {
+            echo "🚀 Build generado automáticamente tras merge a develop"
+            echo ""
+            echo "• PR: #$PR_NUMBER"
+            echo "• Rama: ${CM_BRANCH}"
+            echo "• Autor: $AUTHOR"
+            echo "• Build Number: $NEW_BUILD_NUMBER"
+            echo "• Commit: ${COMMIT_MSG}"
+            echo ""
+            echo "📱 Plataformas:"
+            echo "  ✅ Android (APK)"
+            echo "  ✅ iOS (IPA)"
+            echo ""
+            echo "Las builds están disponibles en Firebase App Distribution para el grupo 'qa-testers'."
+          } > release_notes.txt
+          
+          echo "✅ Release notes creadas"
     
     artifacts:
       - build/**/outputs/**/*.apk
       - build/**/outputs/**/*.aab
       - build/ios/ipa/*.ipa
+      - release_notes.txt
       - flutter_drive.log
     
     publishing:
@@ -104,15 +394,16 @@ workflows:
           groups:
             - qa-testers
           artifact_type: apk
+          release_notes_file: release_notes.txt
         ios:
           app_id: $FIREBASE_APP_ID_IOS
           groups:
             - qa-testers
+          release_notes_file: release_notes.txt
       
       email:
         recipients:
-          - qa-team@company.com
+          - horacioduca23@gmail.com
         notify:
           success: true
           failure: true
-
