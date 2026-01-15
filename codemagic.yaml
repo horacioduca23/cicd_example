@@ -25,6 +25,9 @@ workflows:
       flutter: stable
       xcode: latest
       cocoapods: default
+      ios_signing:
+        distribution_type: ad_hoc
+        bundle_identifier: com.bps.horacioduca.cicdexample
 
     scripts:
       - name: Validate feature branch base (must be from develop)
@@ -222,6 +225,17 @@ workflows:
       - name: Build Android App Bundle
         script: |
           flutter build appbundle --release --build-number=$NEW_BUILD_NUMBER
+
+      - name: Prepare iOS code signing
+        script: |
+          if ! command -v keychain >/dev/null 2>&1 || ! command -v xcode-project >/dev/null 2>&1; then
+            echo "ℹ️  Instalando codemagic-cli-tools..."
+            brew install codemagic-cli-tools
+          fi
+
+          keychain initialize
+          keychain add-certificates
+          xcode-project use-profiles
 
       - name: Build iOS IPA
         script: |
