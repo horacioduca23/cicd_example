@@ -30,7 +30,7 @@ workflows:
       - name: Validate feature branch base (must be from develop)
         script: |
           git fetch origin develop --depth=1
-          if ! git merge-base --is-ancestor origin/develop HEAD; then
+          if ! git merge-base --is-ancestor FETCH_HEAD HEAD; then
             echo "❌ La rama actual no tiene como base 'develop'."
             echo "💡 Crea la rama desde develop: git checkout develop && git pull && git checkout -b feature/tu-rama"
             exit 1
@@ -240,3 +240,4 @@ workflows:
         notify:
           success: true
           failure: true
+          
