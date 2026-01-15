@@ -237,46 +237,70 @@ workflows:
           keychain add-certificates
           xcode-project use-profiles
 
-      - name: Build iOS IPA
+      - name: Resolve iOS provisioning profile
         script: |
-          if [ -n "$IOS_TEAM_ID" ]; then
-            cat > /tmp/export_options.plist << EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key>
-            <string>ad-hoc</string>
-            <key>signingStyle</key>
-            <string>automatic</string>
-            <key>teamID</key>
-            <string>$IOS_TEAM_ID</string>
-            <key>stripSwiftSymbols</key>
-            <true/>
-            <key>compileBitcode</key>
-            <false/>
-          </dict>
-          </plist>
-          EOF
-          else
-            cat > /tmp/export_options.plist << EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key>
-            <string>ad-hoc</string>
-            <key>signingStyle</key>
-            <string>automatic</string>
-            <key>stripSwiftSymbols</key>
-            <true/>
-            <key>compileBitcode</key>
-            <false/>
-          </dict>
-          </plist>
-          EOF
+          BUNDLE_ID="com.bps.horacioduca.cicdexample"
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          PROFILE_NAME=""
+          TEAM_ID=""
+
+          for f in "$PROFILE_DIR"/*.mobileprovision; do
+            [ -f "$f" ] || continue
+            PLIST=$(mktemp)
+            security cms -D -i "$f" > "$PLIST"
+            APP_ID=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" "$PLIST" 2>/dev/null || true)
+            if [[ "$APP_ID" == *"$BUNDLE_ID" ]]; then
+              PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" "$PLIST" 2>/dev/null || true)
+              TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print :TeamIdentifier:0" "$PLIST" 2>/dev/null || true)
+              rm "$PLIST"
+              break
+            fi
+            rm "$PLIST"
+          done
+
+          if [ -z "$PROFILE_NAME" ]; then
+            echo "❌ No se encontró provisioning profile para $BUNDLE_ID"
+            ls -la "$PROFILE_DIR" || true
+            exit 1
           fi
 
+          if [ -z "$TEAM_ID" ] && [ -n "$IOS_TEAM_ID" ]; then
+            TEAM_ID="$IOS_TEAM_ID"
+          fi
+
+          if [ -n "$TEAM_ID" ]; then
+            TEAM_ID_BLOCK="  <key>teamID</key>\n  <string>$TEAM_ID</string>"
+          else
+            TEAM_ID_BLOCK=""
+          fi
+
+          cat > /tmp/export_options.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>ad-hoc</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+          $TEAM_ID_BLOCK
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>$BUNDLE_ID</key>
+              <string>$PROFILE_NAME</string>
+            </dict>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>compileBitcode</key>
+            <false/>
+          </dict>
+          </plist>
+          EOF
+
+          echo "✅ Perfil iOS resuelto: $PROFILE_NAME"
+
+      - name: Build iOS IPA
+        script: |
           flutter build ipa --release --build-number=$NEW_BUILD_NUMBER --export-options-plist=/tmp/export_options.plist
 
       - name: Verify iOS IPA artifact
