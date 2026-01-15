@@ -241,6 +241,22 @@ workflows:
         script: |
           flutter build ipa --release --build-number=$NEW_BUILD_NUMBER --export-method ad-hoc
 
+      - name: Verify iOS IPA artifact
+        script: |
+          IPA_PATH=$(find build/ios/ipa -name "*.ipa" -print -quit)
+          if [ -z "$IPA_PATH" ]; then
+            echo "❌ No se encontró IPA en build/ios/ipa"
+            echo "📁 Contenido de build/ios:"
+            ls -la build/ios || true
+            echo "📁 Contenido de build/ios/ipa:"
+            ls -la build/ios/ipa || true
+            exit 1
+          fi
+
+          mkdir -p build/ios/ipa
+          cp "$IPA_PATH" build/ios/ipa/app-release.ipa
+          echo "✅ IPA detectado y copiado: $IPA_PATH"
+
       - name: Create release notes
         script: |
           PR_NUMBER=${PR_NUMBER:-"N/A"}
@@ -263,6 +279,7 @@ workflows:
       - build/**/outputs/**/*.apk
       - build/**/outputs/**/*.aab
       - build/ios/ipa/*.ipa
+      - build/ios/**/*.ipa
       - release_notes.txt
       - flutter_drive.log
 
