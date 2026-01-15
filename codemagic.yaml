@@ -25,9 +25,6 @@ workflows:
       flutter: stable
       xcode: latest
       cocoapods: default
-      ios_signing:
-        distribution_type: ad_hoc
-        bundle_identifier: com.bps.horacioduca.cicdexample
 
     scripts:
       - name: Validate feature branch base (must be from develop)
@@ -117,6 +114,9 @@ workflows:
       flutter: stable
       xcode: latest
       cocoapods: default
+      ios_signing:
+        distribution_type: ad_hoc
+        bundle_identifier: com.bps.horacioduca.cicdexample
 
     scripts:
       - name: Verify push is from merged PR
@@ -239,7 +239,7 @@ workflows:
 
       - name: Build iOS IPA
         script: |
-          flutter build ipa --release --build-number=$NEW_BUILD_NUMBER
+          flutter build ipa --release --build-number=$NEW_BUILD_NUMBER --export-method ad-hoc
 
       - name: Create release notes
         script: |
