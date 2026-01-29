@@ -268,36 +268,8 @@ workflows:
             TEAM_ID="$IOS_TEAM_ID"
           fi
 
-          if [ -n "$TEAM_ID" ]; then
-            TEAM_ID_BLOCK="  <key>teamID</key>\n  <string>$TEAM_ID</string>"
-          else
-            TEAM_ID_BLOCK=""
-          fi
-
-          cat > /tmp/export_options.plist << EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key>
-            <string>ad-hoc</string>
-            <key>signingStyle</key>
-            <string>manual</string>
-          $TEAM_ID_BLOCK
-            <key>provisioningProfiles</key>
-            <dict>
-              <key>$BUNDLE_ID</key>
-              <string>$PROFILE_NAME</string>
-            </dict>
-            <key>stripSwiftSymbols</key>
-            <true/>
-            <key>compileBitcode</key>
-            <false/>
-          </dict>
-          </plist>
-          EOF
-
-          echo "✅ Perfil iOS resuelto: $PROFILE_NAME"
+          # Generar export_options.plist usando Python
+          python3 -c "import plistlib; BUNDLE_ID='$BUNDLE_ID'; PROFILE_NAME='$PROFILE_NAME'; TEAM_ID='$TEAM_ID'; export_options={'method': 'ad-hoc', 'signingStyle': 'manual', 'provisioningProfiles': {BUNDLE_ID: PROFILE_NAME}, 'stripSwiftSymbols': True, 'compileBitcode': False}; export_options['teamID'] = TEAM_ID if TEAM_ID else None; plistlib.dump({k: v for k, v in export_options.items() if v is not None}, open('/tmp/export_options.plist', 'wb')); print('✅ Perfil iOS resuelto: ' + PROFILE_NAME)"
 
       - name: Build iOS IPA
         script: |
