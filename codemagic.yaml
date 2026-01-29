@@ -268,36 +268,36 @@ workflows:
             TEAM_ID="$IOS_TEAM_ID"
           fi
 
-          if [ -n "$TEAM_ID" ]; then
-            TEAM_ID_BLOCK="  <key>teamID</key>\n  <string>$TEAM_ID</string>"
-          else
-            TEAM_ID_BLOCK=""
-          fi
+          # Generar export_options.plist usando Python para evitar problemas de formato
+          python3 << 'PYEOF'
+import plistlib
 
-          cat > /tmp/export_options.plist << EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key>
-            <string>ad-hoc</string>
-            <key>signingStyle</key>
-            <string>manual</string>
-          $TEAM_ID_BLOCK
-            <key>provisioningProfiles</key>
-            <dict>
-              <key>$BUNDLE_ID</key>
-              <string>$PROFILE_NAME</string>
-            </dict>
-            <key>stripSwiftSymbols</key>
-            <true/>
-            <key>compileBitcode</key>
-            <false/>
-          </dict>
-          </plist>
-          EOF
+BUNDLE_ID = """$BUNDLE_ID"""
+PROFILE_NAME = """$PROFILE_NAME"""
+TEAM_ID = """$TEAM_ID"""
 
-          echo "✅ Perfil iOS resuelto: $PROFILE_NAME"
+export_options = {
+    'method': 'ad-hoc',
+    'signingStyle': 'manual',
+    'provisioningProfiles': {
+        BUNDLE_ID: PROFILE_NAME
+    },
+    'stripSwiftSymbols': True,
+    'compileBitcode': False
+}
+
+if TEAM_ID:
+    export_options['teamID'] = TEAM_ID
+
+with open('/tmp/export_options.plist', 'wb') as f:
+    plistlib.dump(export_options, f)
+
+print("✅ Perfil iOS resuelto: " + PROFILE_NAME)
+print("📄 Contenido de export_options.plist:")
+with open('/tmp/export_options.plist', 'rb') as f:
+    import pprint
+    pprint.pprint(plistlib.load(f))
+PYEOF
 
       - name: Build iOS IPA
         script: |
