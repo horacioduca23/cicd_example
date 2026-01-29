@@ -268,13 +268,14 @@ workflows:
             TEAM_ID="$IOS_TEAM_ID"
           fi
 
-          # Generar export_options.plist usando Python para evitar problemas de formato
-          python3 << 'PYEOF'
+          # Generar export_options.plist usando Python
+          python3 -c "
 import plistlib
+import sys
 
-BUNDLE_ID = """$BUNDLE_ID"""
-PROFILE_NAME = """$PROFILE_NAME"""
-TEAM_ID = """$TEAM_ID"""
+BUNDLE_ID = '$BUNDLE_ID'
+PROFILE_NAME = '$PROFILE_NAME'
+TEAM_ID = '$TEAM_ID'
 
 export_options = {
     'method': 'ad-hoc',
@@ -292,12 +293,12 @@ if TEAM_ID:
 with open('/tmp/export_options.plist', 'wb') as f:
     plistlib.dump(export_options, f)
 
-print("✅ Perfil iOS resuelto: " + PROFILE_NAME)
-print("📄 Contenido de export_options.plist:")
+print('✅ Perfil iOS resuelto: ' + PROFILE_NAME)
+print('📄 Contenido de export_options.plist:')
 with open('/tmp/export_options.plist', 'rb') as f:
     import pprint
     pprint.pprint(plistlib.load(f))
-PYEOF
+"
 
       - name: Build iOS IPA
         script: |
